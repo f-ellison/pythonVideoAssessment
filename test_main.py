@@ -11,7 +11,7 @@ def clear_state():
     video_db.clear()
 
 def create_mock_video_bytes(width: int, height: int, unique_marker: str = "A") -> bytes:
-    """Generates an ultra-light raw AVI video stream with unique visual content stamps."""
+    """Generates an ultra-light raw AVI video stream using universally supported codecs."""
     import cv2
     import numpy as np
     import tempfile
@@ -20,15 +20,21 @@ def create_mock_video_bytes(width: int, height: int, unique_marker: str = "A") -
     with tempfile.NamedTemporaryFile(suffix=".avi", delete=False) as tmp:
         tmp_path = tmp.name
 
-    fourcc = cv2.VideoWriter_fourcc(*'XVID')
+    # FIX: Use 'MJPG' (Motion JPEG) instead of 'XVID'
+    # This guarantees the codec initiates cleanly on headless Linux servers without extra setup
+    fourcc = cv2.VideoWriter_fourcc(*'MJPG')
     out = cv2.VideoWriter(tmp_path, fourcc, 10.0, (width, height))
     
+    if not out.isOpened():
+        # Fallback to an entirely raw uncompressed structure if the OS environment is strictly locked down
+        fourcc_fallback = 0 
+        out = cv2.VideoWriter(tmp_path, fourcc_fallback, 10.0, (width, height))
+    
     for i in range(10):
-        # Create a solid gray baseline background matrix canvas
+        # Create background matrix canvas
         frame = np.ones((height, width, 3), dtype=np.uint8) * 128
         
-        # Draw a unique visual tracking shape/text onto the frame!
-        # This gives the hashing engine distinct layouts to prevent false visual identical matches
+        # Stamp visual tracking context directly onto the frame matrix array
         cv2.putText(
             frame, 
             f"Asset-{unique_marker}-{i}", 
@@ -41,10 +47,15 @@ def create_mock_video_bytes(width: int, height: int, unique_marker: str = "A") -
         out.write(frame)
     out.release()
 
-    # Stream out the raw bytes and clean up the temporary disk track immediately
+    # Read binary back to the test application memory context and clean up disk artifacts
     video_bytes = Path(tmp_path).read_bytes()
-    Path(tmp_path).unlink()
+    try:
+        Path(tmp_path).unlink()
+    except Exception:
+        pass
+        
     return video_bytes
+
 
 def test_upload_valid_ratios():
     """Verifies that standard target aspect ratios resolve to correct buckets."""
