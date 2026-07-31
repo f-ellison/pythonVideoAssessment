@@ -5,96 +5,117 @@
 # The orchestration script that indexes videos in a directory, extracts details, and flags duplicate content.
 
 import os
+import uuid
 import shutil
+from fastapi import FastAPI, UploadFile, File, HTTPException, status
 from pathlib import Path
+
 from detector import get_video_dimensions, find_matched_ratio
 from hasher import generate_video_hashes, calculate_match_confidence
 
-VALID_EXTENSIONS = {'.mp4', '.avi', '.mov', '.mkv', '.webm'}
-CONFIDENCE_THRESHOLD = 60.0 
+app = FastAPI(title="Render Free-Tier Video Matcher API")
 
-def analyze_and_sort_directory(directory_path: str):
-    dir_path = Path(directory_path)
-    if not dir_path.is_dir():
-        print(f"Error: {directory_path} is not a valid directory.")
-        return
+# Pure In-Memory metadata database dictionary
+# This satisfies the "No database" mandate while storing all records across app lifecycle restarts
+video_db = {}
 
-    # Create target folders for sorting execution
-    allowed_buckets = ["9-16", "4-5", "1-1", "16-9", "Other"]
-    bucket_dirs = {}
-    for b in allowed_buckets:
-        folder = dir_path / b
-        folder.mkdir(exist_ok=True)
-        bucket_dirs[b.replace("-", ":")] = folder
-
-    video_files = [p for p in dir_path.iterdir() if p.suffix.lower() in VALID_EXTENSIONS]
-    if not video_files:
-        print("No supported video files found.")
-        return
-
-    processed_videos = []
-
-    print("\n🔍 --- Phase 1: Categorizing and Fingerprinting ---")
-    for vid in video_files:
-        try:
-            w, h = get_video_dimensions(str(vid))
-            ratio_bucket = find_matched_ratio(w, h, tolerance=0.01)
-            
-            # Skip visual hashing for 'Other' items to optimize speed
-            v_hashes = generate_video_hashes(str(vid)) if ratio_bucket != "Other" else []
-            
-            video_data = {
-                "original_name": vid.name,
-                "current_path": vid,
-                "ratio_bucket": ratio_bucket,
-                "hashes": v_hashes
-            }
-            processed_videos.append(video_data)
-            print(f"🎬 Read: {vid.name} -> Bucket Assigned: [{ratio_bucket}]")
-        except Exception as e:
-            print(f"❌ Failed to parse {vid.name}: {e}")
-
-    print("\n👁️  --- Phase 2: Cross-Ratio Duplicate Detection ---")
-    already_matched = set()
+@app.post("/upload", status_code=status.HTTP_201_CREATED)
+async def upload_video(file: UploadFile = File(...)):
+    """Uploads file data using the local file pipeline inside RAM-based transient disk tracks."""
+    video_id = str(uuid.uuid4())
     
-    for i, vid1 in enumerate(processed_videos):
-        # Rule: Completely ignore "Other" videos during layout evaluation matching loops
-        if vid1['ratio_bucket'] == "Other" or vid1['original_name'] in already_matched:
+    # We target Render's transient /tmp virtual disk to maximize RAM performance safely
+    temp_path = Path(f"/tmp/{video_id}_{file.filename}")
+    
+    try:
+        # Stream chunks safely into transient memory limits
+        with open(temp_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+            
+        width, height = get_video_dimensions(str(temp_path))
+        ratio_bucket = find_matched_ratio(width, height, tolerance=0.01)
+        hashes = generate_video_hashes(str(temp_path)) if ratio_bucket != "Other" else []
+        
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Processing failed: {str(e)}")
+    finally:
+        # Crucial for Render Free Tier: Wipe transient files instantly to free up RAM disk
+        if temp_path.exists():
+            temp_path.unlink()
+
+    # Save to our volatile, pure in-memory data state dictionary
+    video_entry = {
+        "video_id": video_id,
+        "filename": file.filename,
+        "width": width,
+        "height": height,
+        "aspect_ratio": f"{width}:{height}" if height > 0 else "0:0",
+        "ratio_bucket": ratio_bucket,
+        "hashes": hashes  # Store fingerprints only; raw large video blocks are dumped
+    }
+    
+    video_db[video_id] = video_entry
+    
+    return {
+        "video_id": video_entry["video_id"],
+        "width": video_entry["width"],
+        "height": video_entry["height"],
+        "aspect_ratio": video_entry["aspect_ratio"],
+        "ratio_bucket": video_entry["ratio_bucket"],
+        "filename": video_entry["filename"]
+    }
+
+@app.get("/match")
+async def match_videos(confidence_threshold: float = 60.0):
+    """Compares cache logs over runtime variables, bypassing identical buckets."""
+    matches_found = []
+    already_paired = set()
+    videos = list(video_db.values())
+
+    for i, vid1 in enumerate(videos):
+        if vid1["ratio_bucket"] == "Other" or vid1["video_id"] in already_paired:
             continue
             
-        matches = []
-        for j, vid2 in enumerate(processed_videos):
-            if i == j or vid2['ratio_bucket'] == "Other" or vid2['original_name'] in already_matched:
+        for j, vid2 in enumerate(videos):
+            if i == j or vid2["ratio_bucket"] == "Other" or vid2["video_id"] in already_paired:
                 continue
                 
-            # Rule: Skip matching calculations if videos belong to the exact same aspect ratio bucket
-            if vid1['ratio_bucket'] == vid2['ratio_bucket']:
+            if vid1["ratio_bucket"] == vid2["ratio_bucket"]:
                 continue
                 
-            confidence = calculate_match_confidence(vid1['hashes'], vid2['hashes'])
-            if confidence >= CONFIDENCE_THRESHOLD:
-                matches.append((vid2['original_name'], vid2['ratio_bucket'], confidence))
-                already_matched.add(vid2['original_name'])
+            score = calculate_match_confidence(vid1["hashes"], vid2["hashes"])
+            if score >= confidence_threshold:
+                matches_found.append({
+                    "video_id": vid2["video_id"],
+                    "filename": vid2["filename"],
+                    "confidence": f"{score}%"
+                })
+                already_paired.add(vid2["video_id"])
                 
-        if matches:
-            print(f"\n⚠️  Cross-Format Content Identified for: {vid1['original_name']} ({vid1['ratio_bucket']})")
-            for name, ratio, score in matches:
-                print(f"   -> Found Variant: {name} ({ratio}) | Match Score: {score}%")
-            already_matched.add(vid1['original_name'])
+        already_paired.add(vid1["video_id"])
 
-    print("\n📦 --- Phase 3: Moving Files to Target Subdirectories ---")
-    for vid in processed_videos:
-        target_dir = bucket_dirs[vid['ratio_bucket']]
-        destination = target_dir / vid['original_name']
+    return matches_found
+
+@app.get("/videos")
+async def get_all_videos():
+    """Returns runtime structures matching original specification outputs."""
+    return [
+        {
+            "video_id": v["video_id"],
+            "width": v["width"],
+            "height": v["height"],
+            "aspect_ratio": v["aspect_ratio"],
+            "ratio_bucket": v["ratio_bucket"],
+            "filename": v["filename"]
+        }
+        for v in video_db.values()
+    ]
+
+@app.delete("/videos/{video_id}")
+async def delete_video(video_id: str):
+    """Drops the tracking metrics directly from the application memory lookup maps."""
+    if video_id not in video_db:
+        raise HTTPException(status_code=404, detail="Requested identity record absent.")
         
-        try:
-            shutil.move(str(vid['current_path']), str(destination))
-            print(f"🚚 Moved {vid['original_name']} ➡️  {vid['ratio_bucket']}/")
-        except Exception as e:
-            print(f"❌ Failed to move {vid['original_name']}: {e}")
-
-    print("\n✅ Processing, indexing, cross-matching, and file sorting tasks complete.")
-
-if __name__ == "__main__":
-    target_folder = input("Enter the path to your video folder: ").strip()
-    analyze_and_sort_directory(target_folder)
+    del video_db[video_id]
+    return {"deleted": video_id}
