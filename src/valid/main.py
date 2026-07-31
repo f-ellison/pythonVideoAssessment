@@ -10,8 +10,8 @@ import shutil
 from fastapi import FastAPI, UploadFile, File, HTTPException, status
 from pathlib import Path
 
-from detector import get_video_dimensions, find_matched_ratio
-from hasher import generate_video_hashes, calculate_match_confidence
+from valid.detector import get_video_dimensions, find_matched_ratio
+from valid.hasher import generate_video_hashes, calculate_match_confidence
 
 app = FastAPI(title="Render Free-Tier Video Matcher API")
 
