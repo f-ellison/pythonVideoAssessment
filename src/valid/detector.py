@@ -9,7 +9,7 @@
 
 import cv2
 
-# Define target ratios as decimal floats
+# Permitted target ratios
 TARGET_RATIOS = {
     "9:16": 9 / 16,  # 0.5625
     "4:5": 4 / 5,    # 0.8000
@@ -29,9 +29,9 @@ def get_video_dimensions(video_path: str) -> tuple[int, int]:
     return width, height
 
 def find_matched_ratio(width: int, height: int, tolerance: float = 0.01) -> str:
-    """Matches video dimensions to a target aspect ratio within tolerance."""
+    """Matches video dimensions within 1% tolerance, else flags as 'Other'."""
     if height == 0:
-        return "Unknown"
+        return "Other"
         
     actual_ratio = width / height
     
@@ -42,4 +42,4 @@ def find_matched_ratio(width: int, height: int, tolerance: float = 0.01) -> str:
         if lower_bound <= actual_ratio <= upper_bound:
             return label
             
-    return f"Custom ({actual_ratio:.2f}:1)"
+    return "Other"
