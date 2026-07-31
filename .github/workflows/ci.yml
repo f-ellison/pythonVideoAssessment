@@ -25,11 +25,19 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y libglib2.0-0
 
-    - name: Build engine dependencies via requirements matrix
+    # UPDATED: Installs dependencies directly from pyproject.toml
+    - name: Build engine dependencies via pyproject config matrix
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        pip install ".[dev]"
 
+    # UPDATED: Pytest now reads configurations automatically from pyproject.toml
     - name: Execute Pytest test suites
       run: |
-        pytest test_main.py -v
+        pytest
+
+    - name: Trigger Automated Deployment to Render Instance
+      if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+      run: |
+        echo "🚀 Requesting production deployment pull from Render..."
+        curl -X POST "${{ secrets.RENDER_DEPLOY_WEBHOOK }}"
