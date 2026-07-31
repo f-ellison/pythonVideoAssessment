@@ -10,8 +10,8 @@ def clear_state():
     """Wipes the volatile in-memory dictionary before running every single test case."""
     video_db.clear()
 
-def create_mock_video_bytes(width: int, height: int) -> bytes:
-    """Generates an ultra-light, uncompressed raw AVI video stream directly in RAM."""
+def create_mock_video_bytes(width: int, height: int, unique_marker: str = "A") -> bytes:
+    """Generates an ultra-light raw AVI video stream with unique visual content stamps."""
     import cv2
     import numpy as np
     import tempfile
@@ -20,13 +20,24 @@ def create_mock_video_bytes(width: int, height: int) -> bytes:
     with tempfile.NamedTemporaryFile(suffix=".avi", delete=False) as tmp:
         tmp_path = tmp.name
 
-    # Create a simple 10-frame empty colored frame sequence block
     fourcc = cv2.VideoWriter_fourcc(*'XVID')
     out = cv2.VideoWriter(tmp_path, fourcc, 10.0, (width, height))
     
-    for _ in range(10):
-        # Draw a solid mock gray block matrix canvas
+    for i in range(10):
+        # Create a solid gray baseline background matrix canvas
         frame = np.ones((height, width, 3), dtype=np.uint8) * 128
+        
+        # Draw a unique visual tracking shape/text onto the frame!
+        # This gives the hashing engine distinct layouts to prevent false visual identical matches
+        cv2.putText(
+            frame, 
+            f"Asset-{unique_marker}-{i}", 
+            (width // 4, height // 2), 
+            cv2.FONT_HERSHEY_SIMPLEX, 
+            1.0, 
+            (0, 0, 0), 
+            2
+        )
         out.write(frame)
     out.release()
 
@@ -67,14 +78,16 @@ def test_get_all_videos_endpoint():
 
 def test_cross_ratio_matching_matrix():
     """Checks that same-bucket queries skip evaluation while cross-buckets match."""
-    # Generate identical visual canvas arrays
-    v1_bytes = create_mock_video_bytes(1280, 720)   # 16:9 Master
-    v2_bytes = create_mock_video_bytes(1920, 1080)  # 16:9 Duplicate (Same bucket!)
-    v3_bytes = create_mock_video_bytes(1080, 1920)  # 9:16 Cross-Format Cut Variant
+    # Generate unique visual contents for unrelated videos
+    v1_bytes = create_mock_video_bytes(1280, 720, unique_marker="MASTER_V1")   # 16:9 Master
+    v2_bytes = create_mock_video_bytes(1920, 1080, unique_marker="DIFFERENT_V2") # 16:9 Distinct Video (Same bucket!)
+    
+    # Crop simulation: Use the exact same visual content marker ("MASTER_V1") for the 9:16 variation!
+    v3_bytes = create_mock_video_bytes(1080, 1920, unique_marker="MASTER_V1")   # 9:16 Cross-Format Cut Variant
     
     # Upload everything to tracking arrays
     client.post("/upload", files={"file": ("720p.mp4", v1_bytes, "video/mp4")})
-    client.post("/upload", files={"file": ("1080p.mp4", v2_bytes, "video/mp4")})
+    client.post("/upload", files={"file": ("distinct_1080p.mp4", v2_bytes, "video/mp4")})
     client.post("/upload", files={"file": ("tiktok.mp4", v3_bytes, "video/mp4")})
     
     # Evaluate matched matrices
@@ -82,8 +95,8 @@ def test_cross_ratio_matching_matrix():
     assert match_response.status_code == 200
     matches = match_response.json()
     
-    # 720p and 1080p are both 16:9, so they must NOT trigger a match. 
-    # Only the tiktok.mp4 (9:16) should flag a cross-ratio layout match.
+    # distinct_1080p.mp4 will be completely ignored because its visual hash is completely unique.
+    # tiktok.mp4 will match 720p.mp4 because their contents share the same visual stamp, and they cross buckets!
     assert len(matches) == 1
     assert matches[0]["filename"] == "tiktok.mp4"
 
