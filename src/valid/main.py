@@ -10,8 +10,8 @@ from detector import get_video_dimensions, find_matched_ratio
 from hasher import generate_video_hashes, calculate_match_confidence
 
 VALID_EXTENSIONS = {'.mp4', '.avi', '.mov', '.mkv', '.webm'}
-# Set the minimum confidence threshold to report a valid duplicate group
-CONFIDENCE_THRESHOLD = 75.0 
+# Lowered slightly to capture videos with massive exposure or trim differences
+CONFIDENCE_THRESHOLD = 60.0 
 
 def analyze_directory(directory_path: str):
     dir_path = Path(directory_path)
@@ -20,19 +20,20 @@ def analyze_directory(directory_path: str):
         return
 
     video_files = [p for p in dir_path.iterdir() if p.suffix.lower() in VALID_EXTENSIONS]
-    
     if not video_files:
         print("No supported video files found.")
         return
 
     processed_videos = []
 
-    print("\n🔍 --- Phase 1: Fingerprinting Videos & Ratios ---")
+    print("\n🔍 --- Phase 1: Normalizing Visual Content & Ratios ---")
     for vid in video_files:
         try:
             w, h = get_video_dimensions(str(vid))
             ratio_label = find_matched_ratio(w, h, tolerance=0.01)
-            v_hashes = generate_video_hashes(str(vid))
+            
+            # Extracts absolute fingerprints every 2 seconds up to 5 times (10-second window tracking)
+            v_hashes = generate_video_hashes(str(vid), sample_interval_seconds=2.0, max_samples=5)
             
             video_data = {
                 "name": vid.name,
@@ -42,12 +43,11 @@ def analyze_directory(directory_path: str):
                 "hashes": v_hashes
             }
             processed_videos.append(video_data)
-            print(f"🎬 Processed: {video_data['name']} [{video_data['ratio']}]")
+            print(f"🎬 Processed: {video_data['name']} [{video_data['ratio']}] ({len(v_hashes)} fingerprints cached)")
         except Exception as e:
             print(f"❌ Failed to process {vid.name}: {e}")
 
-    print("\n👁️  --- Phase 2: Duplicate Content Matrix ---")
-    
+    print("\n👁️  --- Phase 2: Evaluating Length/Exposure Cross-Matches ---")
     already_grouped = set()
     
     for i, vid1 in enumerate(processed_videos):
@@ -55,26 +55,23 @@ def analyze_directory(directory_path: str):
             continue
             
         matches = []
-        
         for j, vid2 in enumerate(processed_videos):
             if i == j:
                 continue
                 
             confidence = calculate_match_confidence(vid1['hashes'], vid2['hashes'])
-            
             if confidence >= CONFIDENCE_THRESHOLD:
-                matches.append((vid2['name'], vid2['path'], confidence))
+                matches.append((vid2['name'], vid2['ratio'], confidence))
+                already_grouped.add(vid2['path'])
                 
         if matches:
-            print(f"\n⚠️  Matches detected for master asset: {vid1['name']} ({vid1['ratio']})")
-            print(f"   - [Source Master Artifact]")
-            for match_name, match_path, score in matches:
-                print(f"   - Match: {match_name} | Match Confidence: {score}%")
-                already_grouped.add(match_path)
+            print(f"\n⚠️  Matches detected for asset: {vid1['name']} ({vid1['ratio']})")
+            for name, ratio, score in matches:
+                print(f"   -> Match: {name} ({ratio}) | Confidence: {score}%")
             already_grouped.add(vid1['path'])
 
     if not already_grouped:
-        print("✅ No matching cross-format duplicates found at or above the threshold.")
+        print("✅ No duplicate video matches detected at the current threshold parameters.")
 
 if __name__ == "__main__":
     target_folder = input("Enter the path to your video folder: ").strip()
