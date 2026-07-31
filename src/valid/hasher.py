@@ -8,34 +8,73 @@
 
 import cv2
 import imagehash
-from PIL import Image
+from PIL import Image, ImageOps
 
-def generate_video_hash(video_path: str) -> str | None:
-    """Generates a perceptual hash from the middle frame of a video."""
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        return None
-        
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    middle_frame_idx = total_frames // 2
-    
-    # Jump directly to the middle frame
-    cap.set(cv2.CAP_PROP_POS_FRAMES, middle_frame_idx)
-    success, frame = cap.read()
-    cap.release()
-    
-    if not success or frame is None:
-        return None
-        
-    # Convert OpenCV BGR frame to PIL RGB Image
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+def square_normalize_frame(cv2_frame, target_size=256) -> Image.Image:
+    """Converts a frame to a padded square to eliminate aspect ratio bias."""
+    rgb_frame = cv2.cvtColor(cv2_frame, cv2.COLOR_BGR2RGB)
     pil_img = Image.fromarray(rgb_frame)
     
-    # Generate perceptual hash (resilient to scale/compression changes)
-    return str(imagehash.phash(pil_img))
+    # Resize and pad with black bars so layout changes don't destroy the hash
+    pil_img.thumbnail((target_size, target_size), Image.Resampling.LANCZOS)
+    
+    # Create background square canvas
+    background = Image.new('RGB', (target_size, target_size), (0, 0, 0))
+    offset = ((target_size - pil_img.width) // 2, (target_size - pil_img.height) // 2)
+    background.paste(pil_img, offset)
+    
+    return background
 
-def check_content_match(hash1: str, hash2: str, max_distance: int = 4) -> bool:
-    """Compares two hashes. If Hamming distance is low, content is identical."""
-    h1 = imagehash.hex_to_hash(hash1)
-    h2 = imagehash.hex_to_hash(hash2)
-    return (h1 - h2) <= max_distance
+def generate_video_hashes(video_path: str, num_samples: int = 3) -> list[str]:
+    """Extracts padded frames across the timeline to create a robust fingerprint."""
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return []
+        
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if total_frames <= 0:
+        cap.release()
+        return []
+
+    hashes = []
+    # Sample evenly across the video (e.g., 25%, 50%, 75% marks)
+    intervals = [int(total_frames * (i / (num_samples + 1))) for i in range(1, num_samples + 1)]
+
+    for frame_idx in intervals:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        success, frame = cap.read()
+        if success and frame is not None:
+            normalized_img = square_normalize_frame(frame)
+            # Use dHash (Difference Hash) which tracks gradients better over resolution changes
+            v_hash = str(imagehash.dhash(normalized_img))
+            hashes.append(v_hash)
+            
+    cap.release()
+    return hashes
+
+def calculate_match_confidence(hashes1: list[str], hashes2: list[str]) -> float:
+    """Computes similarity percentage based on overall bit distance."""
+    if not hashes1 or not hashes2:
+        return 0.0
+        
+    total_bits = 0
+    total_distance = 0
+    
+    # Compare each corresponding sampled section
+    for h1_str, h2_str in zip(hashes1, hashes2):
+        h1 = imagehash.hex_to_hash(h1_str)
+        h2 = imagehash.hex_to_hash(h2_str)
+        
+        # Max bit length for standard imagehash hashes is usually 64 bits
+        bit_length = len(h1.hash.flatten()) 
+        distance = h1 - h2
+        
+        total_bits += bit_length
+        total_distance += distance
+        
+    if total_bits == 0:
+        return 0.0
+        
+    # Translate bit variation into a readable confidence metric
+    confidence = (1.0 - (total_distance / total_bits)) * 100
+    return round(confidence, 1)
