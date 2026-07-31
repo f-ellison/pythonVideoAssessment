@@ -5,19 +5,27 @@
 # The orchestration script that indexes videos in a directory, extracts details, and flags duplicate content.
 
 import os
+import shutil
 from pathlib import Path
 from detector import get_video_dimensions, find_matched_ratio
 from hasher import generate_video_hashes, calculate_match_confidence
 
 VALID_EXTENSIONS = {'.mp4', '.avi', '.mov', '.mkv', '.webm'}
-# Lowered slightly to capture videos with massive exposure or trim differences
 CONFIDENCE_THRESHOLD = 60.0 
 
-def analyze_directory(directory_path: str):
+def analyze_and_sort_directory(directory_path: str):
     dir_path = Path(directory_path)
     if not dir_path.is_dir():
         print(f"Error: {directory_path} is not a valid directory.")
         return
+
+    # Create target folders for sorting execution
+    allowed_buckets = ["9-16", "4-5", "1-1", "16-9", "Other"]
+    bucket_dirs = {}
+    for b in allowed_buckets:
+        folder = dir_path / b
+        folder.mkdir(exist_ok=True)
+        bucket_dirs[b.replace("-", ":")] = folder
 
     video_files = [p for p in dir_path.iterdir() if p.suffix.lower() in VALID_EXTENSIONS]
     if not video_files:
@@ -26,53 +34,67 @@ def analyze_directory(directory_path: str):
 
     processed_videos = []
 
-    print("\n🔍 --- Phase 1: Normalizing Visual Content & Ratios ---")
+    print("\n🔍 --- Phase 1: Categorizing and Fingerprinting ---")
     for vid in video_files:
         try:
             w, h = get_video_dimensions(str(vid))
-            ratio_label = find_matched_ratio(w, h, tolerance=0.01)
+            ratio_bucket = find_matched_ratio(w, h, tolerance=0.01)
             
-            # Extracts absolute fingerprints every 2 seconds up to 5 times (10-second window tracking)
-            v_hashes = generate_video_hashes(str(vid), sample_interval_seconds=2.0, max_samples=5)
+            # Skip visual hashing for 'Other' items to optimize speed
+            v_hashes = generate_video_hashes(str(vid)) if ratio_bucket != "Other" else []
             
             video_data = {
-                "name": vid.name,
-                "path": str(vid),
-                "resolution": f"{w}x{h}",
-                "ratio": ratio_label,
+                "original_name": vid.name,
+                "current_path": vid,
+                "ratio_bucket": ratio_bucket,
                 "hashes": v_hashes
             }
             processed_videos.append(video_data)
-            print(f"🎬 Processed: {video_data['name']} [{video_data['ratio']}] ({len(v_hashes)} fingerprints cached)")
+            print(f"🎬 Read: {vid.name} -> Bucket Assigned: [{ratio_bucket}]")
         except Exception as e:
-            print(f"❌ Failed to process {vid.name}: {e}")
+            print(f"❌ Failed to parse {vid.name}: {e}")
 
-    print("\n👁️  --- Phase 2: Evaluating Length/Exposure Cross-Matches ---")
-    already_grouped = set()
+    print("\n👁️  --- Phase 2: Cross-Ratio Duplicate Detection ---")
+    already_matched = set()
     
     for i, vid1 in enumerate(processed_videos):
-        if vid1['path'] in already_grouped:
+        # Rule: Completely ignore "Other" videos during layout evaluation matching loops
+        if vid1['ratio_bucket'] == "Other" or vid1['original_name'] in already_matched:
             continue
             
         matches = []
         for j, vid2 in enumerate(processed_videos):
-            if i == j:
+            if i == j or vid2['ratio_bucket'] == "Other" or vid2['original_name'] in already_matched:
+                continue
+                
+            # Rule: Skip matching calculations if videos belong to the exact same aspect ratio bucket
+            if vid1['ratio_bucket'] == vid2['ratio_bucket']:
                 continue
                 
             confidence = calculate_match_confidence(vid1['hashes'], vid2['hashes'])
             if confidence >= CONFIDENCE_THRESHOLD:
-                matches.append((vid2['name'], vid2['ratio'], confidence))
-                already_grouped.add(vid2['path'])
+                matches.append((vid2['original_name'], vid2['ratio_bucket'], confidence))
+                already_matched.add(vid2['original_name'])
                 
         if matches:
-            print(f"\n⚠️  Matches detected for asset: {vid1['name']} ({vid1['ratio']})")
+            print(f"\n⚠️  Cross-Format Content Identified for: {vid1['original_name']} ({vid1['ratio_bucket']})")
             for name, ratio, score in matches:
-                print(f"   -> Match: {name} ({ratio}) | Confidence: {score}%")
-            already_grouped.add(vid1['path'])
+                print(f"   -> Found Variant: {name} ({ratio}) | Match Score: {score}%")
+            already_matched.add(vid1['original_name'])
 
-    if not already_grouped:
-        print("✅ No duplicate video matches detected at the current threshold parameters.")
+    print("\n📦 --- Phase 3: Moving Files to Target Subdirectories ---")
+    for vid in processed_videos:
+        target_dir = bucket_dirs[vid['ratio_bucket']]
+        destination = target_dir / vid['original_name']
+        
+        try:
+            shutil.move(str(vid['current_path']), str(destination))
+            print(f"🚚 Moved {vid['original_name']} ➡️  {vid['ratio_bucket']}/")
+        except Exception as e:
+            print(f"❌ Failed to move {vid['original_name']}: {e}")
+
+    print("\n✅ Processing, indexing, cross-matching, and file sorting tasks complete.")
 
 if __name__ == "__main__":
     target_folder = input("Enter the path to your video folder: ").strip()
-    analyze_directory(target_folder)
+    analyze_and_sort_directory(target_folder)
