@@ -68,31 +68,31 @@ def test_cross_ratio_matching_matrix(mock_video_processing):
     """Checks that same-bucket queries skip evaluation while cross-buckets match."""
     mock_dims, mock_ratio, mock_hashes = mock_video_processing
 
-    # 1. Upload Video 1: 16:9 Widescreen Master
+    # 1. Upload Video 1: 16:9 Widescreen Master (Using valid 64-bit hex characters)
     mock_dims.return_value = (1280, 720)
     mock_ratio.return_value = "16:9"
-    mock_hashes.return_value = ["hashA", "hashB"]
+    mock_hashes.return_value = ["0000000000000000", "ffffffffffffffff"]
     client.post("/upload", files={"file": ("720p.mp4", b"fake_video_bytes", "video/mp4")})
 
-    # 2. Upload Video 2: Distinct 16:9 Video (Same bucket, different content hashes)
+    # 2. Upload Video 2: Distinct 16:9 Video (Same bucket, totally different hex hashes)
     mock_dims.return_value = (1920, 1080)
     mock_ratio.return_value = "16:9"
-    mock_hashes.return_value = ["hashX", "hashY"]
+    mock_hashes.return_value = ["aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"]
     client.post("/upload", files={"file": ("distinct_1080p.mp4", b"fake_video_bytes", "video/mp4")})
 
-    # 3. Upload Video 3: 9:16 Vertical Video (Cross-bucket, matching content hashes with Video 1)
+    # 3. Upload Video 3: 9:16 Vertical Video (Cross-bucket, exact hash match with Video 1)
     mock_dims.return_value = (1080, 1920)
     mock_ratio.return_value = "9:16"
-    mock_hashes.return_value = ["hashA", "hashB"] # Same hash signatures as 720p.mp4
+    mock_hashes.return_value = ["0000000000000000", "ffffffffffffffff"] # Matches 720p.mp4
     client.post("/upload", files={"file": ("tiktok.mp4", b"fake_video_bytes", "video/mp4")})
 
-    # Evaluate matched matrices (we set confidence threshold to 100 to ensure exact hash mapping matches)
+    # Evaluate matched matrices (100.0% match threshold)
     match_response = client.get("/match?confidence_threshold=100.0")
     assert match_response.status_code == 200
     matches = match_response.json()
     
-    # - distinct_1080p.mp4 is ignored because its content hashes are completely unique.
-    # - 720p.mp4 and tiktok.mp4 match because they share identical hashes and occupy DIFFERENT ratio buckets.
+    # - distinct_1080p.mp4 is ignored because its content hashes are unique.
+    # - 720p.mp4 and tiktok.mp4 match because they share identical hashes and cross ratio buckets.
     assert len(matches) == 1
     assert matches[0]["filename"] == "tiktok.mp4"
 
