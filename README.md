@@ -14,3 +14,11 @@ Sample videos are served from a private GCS bucket via short-lived server-side V
 2. Install the requirements: pip install -r requirements.txt
 3. Launch the application: python main.py
 4. Enter the folder path containing your videos when prompted.
+
+# Settings to Deploy on Render
+https://render.com/docs/free
+
+When setting up your new Web Service on Render, configure these exact settings in the dashboard to match Uvicorn's hosting specifications:
+1. Environment: Python
+2. Build Command: pip install -r requirements.txt
+3. Start Command: uvicorn main:app --host 0.0.0.0 --port $PORT

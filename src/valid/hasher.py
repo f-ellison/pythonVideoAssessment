@@ -11,45 +11,30 @@ import imagehash
 from PIL import Image
 
 def normalize_and_equalize_frame(cv2_frame, target_size=256) -> Image.Image:
-    """Converts a frame to grayscale and equalizes histograms to counter brightness changes."""
-    # Convert directly to grayscale to focus strictly on structural layouts
     gray_frame = cv2.cvtColor(cv2_frame, cv2.COLOR_BGR2GRAY)
-    
-    # Equalize histogram to eliminate exposure, brightness, and high-contrast filter variations
     equalized_gray = cv2.equalizeHist(gray_frame)
-    
-    # Convert to PIL Image for hashing libraries
     pil_img = Image.fromarray(equalized_gray)
     
-    # Resize and square pad to remove aspect layout changes
     pil_img.thumbnail((target_size, target_size), Image.Resampling.LANCZOS)
-    background = Image.new('L', (target_size, target_size), 0) # Grayscale black canvas
+    background = Image.new('L', (target_size, target_size), 0)
     offset = ((target_size - pil_img.width) // 2, (target_size - pil_img.height) // 2)
     background.paste(pil_img, offset)
-    
     return background
 
 def generate_video_hashes(video_path: str, sample_interval_seconds: float = 2.0, max_samples: int = 5) -> list[str]:
-    """Samples frames at explicit absolute timestamps to handle varying video lengths."""
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         return []
         
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    
     if fps <= 0 or total_frames <= 0:
         cap.release()
         return []
 
     hashes = []
-    
-    # Generate explicit frame index markers based on real runtime seconds (e.g. 2s, 4s, 6s)
     for i in range(max_samples):
-        target_second = (i + 1) * sample_interval_seconds
-        target_frame = int(target_second * fps)
-        
-        # Cease searching if the target index overshoots this specific clip's timeline length
+        target_frame = int((i + 1) * sample_interval_seconds * fps)
         if target_frame >= total_frames:
             break
             
@@ -57,38 +42,21 @@ def generate_video_hashes(video_path: str, sample_interval_seconds: float = 2.0,
         success, frame = cap.read()
         if success and frame is not None:
             normalized_img = normalize_and_equalize_frame(frame)
-            # Average Hash (aHash) focuses on raw flat structures, scaling best alongside histogram changes
-            v_hash = str(imagehash.average_hash(normalized_img))
-            hashes.append(v_hash)
+            hashes.append(str(imagehash.average_hash(normalized_img)))
             
     cap.release()
     return hashes
 
 def calculate_match_confidence(hashes1: list[str], hashes2: list[str]) -> float:
-    """Computes similarity using a structural lookup mapping across matching indices."""
-    if not hashes1 or not hashes2:
-        return 0.0
-        
-    # Only compare overlapping chunks up to the shortest clip's duration bounds
     compare_limit = min(len(hashes1), len(hashes2))
     if compare_limit == 0:
         return 0.0
         
-    total_bits = 0
-    total_distance = 0
-    
+    total_bits, total_distance = 0, 0
     for idx in range(compare_limit):
         h1 = imagehash.hex_to_hash(hashes1[idx])
         h2 = imagehash.hex_to_hash(hashes2[idx])
+        total_bits += len(h1.hash.flatten())
+        total_distance += (h1 - h2)
         
-        bit_length = len(h1.hash.flatten())
-        distance = h1 - h2
-        
-        total_bits += bit_length
-        total_distance += distance
-        
-    if total_bits == 0:
-        return 0.0
-        
-    confidence = (1.0 - (total_distance / total_bits)) * 100
-    return round(confidence, 1)
+    return round((1.0 - (total_distance / total_bits)) * 100, 1) if total_bits > 0 else 0.0

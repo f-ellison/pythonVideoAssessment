@@ -21,7 +21,7 @@ def get_video_dimensions(video_path: str) -> tuple[int, int]:
     """Extracts width and height of a video file."""
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
-        raise ValueError(f"Could not open video file: {video_path}")
+        raise ValueError("Could not decode video stream.")
     
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -29,17 +29,10 @@ def get_video_dimensions(video_path: str) -> tuple[int, int]:
     return width, height
 
 def find_matched_ratio(width: int, height: int, tolerance: float = 0.01) -> str:
-    """Matches video dimensions within 1% tolerance, else flags as 'Other'."""
     if height == 0:
         return "Other"
-        
     actual_ratio = width / height
-    
     for label, target_val in TARGET_RATIOS.items():
-        lower_bound = target_val * (1.0 - tolerance)
-        upper_bound = target_val * (1.0 + tolerance)
-        
-        if lower_bound <= actual_ratio <= upper_bound:
+        if (target_val * (1.0 - tolerance)) <= actual_ratio <= (target_val * (1.0 + tolerance)):
             return label
-            
     return "Other"
