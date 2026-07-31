@@ -15,9 +15,9 @@ def clear_state():
 @pytest.fixture
 def mock_video_processing():
     """Mocks OpenCV and ImageHash operations to run reliably on any system."""
-    with patch("main.get_video_dimensions") as mock_dims, \
-         patch("main.find_matched_ratio") as mock_ratio, \
-         patch("main.generate_video_hashes") as mock_hashes:
+    with patch("valid.main.get_video_dimensions") as mock_dims, \
+         patch("valid.main.find_matched_ratio") as mock_ratio, \
+         patch("valid.main.generate_video_hashes") as mock_hashes:
         yield mock_dims, mock_ratio, mock_hashes
 
 def test_upload_valid_ratios(mock_video_processing):
