@@ -1,0 +1,35 @@
+name: Python Project CI Matrix
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test-and-verify:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Check out source code repository branch layers
+      uses: actions/checkout@v4
+
+    - name: Set up runtime Python environment sandbox
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip' # Speeds up subsequent build executions
+
+    - name: Install system multimedia dependencies for OpenCV headless processing
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libgl1-mesa-glx libglib2.0-0
+
+    - name: Build engine dependencies via requirements matrix
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Execute Pytest test suites
+      run: |
+        pytest test_main.py -v
